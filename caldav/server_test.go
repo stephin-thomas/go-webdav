@@ -211,6 +211,10 @@ func (t testBackend) DeleteCalendarObject(ctx context.Context, path string) erro
 	return nil
 }
 
+func (t testBackend) DeleteCalendar(ctx context.Context, path string) error {
+	return nil
+}
+
 func (t testBackend) GetCalendarObject(ctx context.Context, path string, req *CalendarCompRequest) (*CalendarObject, error) {
 	for _, objs := range t.objectMap {
 		for _, obj := range objs {

@@ -41,6 +41,8 @@ type Backend interface {
 	PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *PutCalendarObjectOptions) (*CalendarObject, error)
 	DeleteCalendarObject(ctx context.Context, path string) error
 
+	DeleteCalendar(ctx context.Context, path string) error
+
 	webdav.UserPrincipalBackend
 }
 
@@ -565,6 +567,11 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 			Description: cal.Description,
 		})
 	}
+	if cal.Color != "" {
+		props[appleCalendarColorName] = internal.PropFindValue(&appleCalendarColor{
+			Color: cal.Color,
+		})
+	}
 	if cal.MaxResourceSize > 0 {
 		props[maxResourceSizeName] = internal.PropFindValue(&maxResourceSize{
 			Size: cal.MaxResourceSize,
@@ -661,8 +668,85 @@ func (b *backend) propFindAllCalendarObjects(ctx context.Context, propfind *inte
 	return resps, nil
 }
 
+// calendarUpdater is an optional interface backends may implement to support
+// PROPPATCH on calendar collections.
+type calendarUpdater interface {
+	UpdateCalendar(ctx context.Context, cal *Calendar) error
+}
+
 func (b *backend) PropPatch(r *http.Request, update *internal.PropertyUpdate) (*internal.Response, error) {
-	return nil, internal.HTTPErrorf(http.StatusNotImplemented, "caldav: PropPatch not implemented")
+	resp := &internal.Response{Hrefs: []internal.Href{{Path: r.URL.Path}}}
+
+	updater, canUpdate := b.Backend.(calendarUpdater)
+	isCalendar := b.resourceTypeAtPath(r.URL.Path) == resourceTypeCalendar
+
+	cal := &Calendar{Path: r.URL.Path}
+	hasUpdate := false
+
+	for _, set := range update.Set {
+		for _, raw := range set.Prop.Raw {
+			xmlName, ok := raw.XMLName()
+			if !ok {
+				continue
+			}
+			handled := false
+			if isCalendar && canUpdate {
+				switch xmlName {
+				case internal.DisplayNameName:
+					var dn internal.DisplayName
+					if err := raw.Decode(&dn); err == nil {
+						cal.Name = dn.Name
+						hasUpdate = true
+						handled = true
+					}
+				case calendarDescriptionName:
+					var cd calendarDescription
+					if err := raw.Decode(&cd); err == nil {
+						cal.Description = cd.Description
+						hasUpdate = true
+						handled = true
+					}
+				case appleCalendarColorName:
+					var cc appleCalendarColor
+					if err := raw.Decode(&cc); err == nil {
+						cal.Color = cc.Color
+						hasUpdate = true
+						handled = true
+					}
+				}
+			}
+			code := http.StatusForbidden
+			if handled {
+				code = http.StatusOK
+			}
+			if err := resp.EncodeProp(code, internal.NewRawXMLElement(xmlName, nil, nil)); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Silently decline property removals (clients tolerate 403 here).
+	for _, remove := range update.Remove {
+		for _, raw := range remove.Prop.Raw {
+			if xmlName, ok := raw.XMLName(); ok {
+				if err := resp.EncodeProp(http.StatusForbidden, internal.NewRawXMLElement(xmlName, nil, nil)); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	if len(resp.PropStats) == 0 {
+		return nil, internal.HTTPErrorf(http.StatusBadRequest, "caldav: empty propertyupdate")
+	}
+
+	if hasUpdate {
+		if err := updater.UpdateCalendar(r.Context(), cal); err != nil {
+			return nil, err
+		}
+	}
+
+	return resp, nil
 }
 
 func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
@@ -712,7 +796,14 @@ func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (b *backend) Delete(r *http.Request) error {
-	return b.Backend.DeleteCalendarObject(r.Context(), r.URL.Path)
+	switch b.resourceTypeAtPath(r.URL.Path) {
+	case resourceTypeCalendar:
+		return b.Backend.DeleteCalendar(r.Context(), r.URL.Path)
+	case resourceTypeCalendarObject:
+		return b.Backend.DeleteCalendarObject(r.Context(), r.URL.Path)
+	default:
+		return internal.HTTPErrorf(http.StatusForbidden, "caldav: cannot delete resource at this path")
+	}
 }
 
 func (b *backend) Mkcol(r *http.Request) error {
@@ -727,14 +818,19 @@ func (b *backend) Mkcol(r *http.Request) error {
 	if !internal.IsRequestBodyEmpty(r) {
 		var m mkcolReq
 		if err := internal.DecodeXMLRequest(r, &m); err != nil {
-			return internal.HTTPErrorf(http.StatusBadRequest, "carddav: error parsing mkcol request: %s", err.Error())
+			return internal.HTTPErrorf(http.StatusBadRequest, "caldav: error parsing mkcol request: %s", err.Error())
 		}
 
 		if !m.ResourceType.Is(internal.CollectionName) || !m.ResourceType.Is(calendarName) {
-			return internal.HTTPErrorf(http.StatusBadRequest, "carddav: unexpected resource type")
+			return internal.HTTPErrorf(http.StatusBadRequest, "caldav: unexpected resource type")
 		}
 		cal.Name = m.DisplayName
-		// TODO ...
+		cal.Color = m.Color
+		for _, c := range m.SupportedComponentSet.Comps {
+			if c.Name != "" {
+				cal.SupportedComponentSet = append(cal.SupportedComponentSet, c.Name)
+			}
+		}
 	}
 
 	return b.Backend.CreateCalendar(r.Context(), &cal)

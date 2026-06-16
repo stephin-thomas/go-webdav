@@ -67,6 +67,7 @@ type Calendar struct {
 	Path                  string
 	Name                  string
 	Description           string
+	Color                 string // Apple calendar color, e.g. "#FF5733FF"
 	MaxResourceSize       int64
 	SupportedComponentSet []string
 }

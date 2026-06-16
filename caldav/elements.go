@@ -9,9 +9,12 @@ import (
 )
 
 const namespace = "urn:ietf:params:xml:ns:caldav"
+const appleNS = "http://apple.com/ns/ical/"
 
 var (
 	calendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
+
+	appleCalendarColorName = xml.Name{Space: appleNS, Local: "calendar-color"}
 
 	calendarDescriptionName           = xml.Name{namespace, "calendar-description"}
 	supportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
@@ -237,8 +240,20 @@ func (r *reportReq) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 }
 
 type mkcolReq struct {
-	XMLName      xml.Name              `xml:"DAV: mkcol"`
-	ResourceType internal.ResourceType `xml:"set>prop>resourcetype"`
-	DisplayName  string                `xml:"set>prop>displayname"`
-	// TODO this could theoretically contain all addressbook properties?
+	XMLName               xml.Name              `xml:"DAV: mkcol"`
+	ResourceType          internal.ResourceType `xml:"set>prop>resourcetype"`
+	DisplayName           string                `xml:"set>prop>displayname"`
+	SupportedComponentSet mkcolComponentSet     `xml:"set>prop>supported-calendar-component-set"`
+	Color                 string                `xml:"set>prop>calendar-color"`
+}
+
+type mkcolComponentSet struct {
+	Comps []struct {
+		Name string `xml:"name,attr"`
+	} `xml:"comp"`
+}
+
+type appleCalendarColor struct {
+	XMLName xml.Name `xml:"http://apple.com/ns/ical/ calendar-color"`
+	Color   string   `xml:",chardata"`
 }
